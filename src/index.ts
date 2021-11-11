@@ -12,6 +12,7 @@ import { ViteDevServer, Plugin } from 'vite'
 import { SFCBlock } from '@vue/component-compiler-utils'
 import { handleHotUpdate } from './hmr'
 import { transformVueJsx } from './jsxTransform'
+import { EXPORT_HELPER_ID, helperCode } from './helper'
 
 export const vueComponentNormalizer = '\0/vite/vueComponentNormalizer'
 export const vueHotReload = '\0/vite/vueHotReload'
@@ -43,6 +44,15 @@ export interface VueViteOptions {
    * The options for esbuld to transform script code
    */
   target?: string
+
+  /**
+   * Transform Vue SFCs into custom elements
+   * - `true` -> all `*.vue` imports are converted into custom elements
+   * - `string | RegExp` -> matched files are converted into custom elements
+   *
+   * @default /\.ce\.vue$/
+   */
+  customElement?: boolean | string | RegExp | (string | RegExp)[]
 }
 
 export interface ResolvedOptions extends VueViteOptions {
@@ -60,6 +70,12 @@ export function createVuePlugin(rawOptions: VueViteOptions = {}): Plugin {
   }
 
   const filter = createFilter(options.include || /\.vue$/, options.exclude)
+
+  const customElement = rawOptions.customElement || /\.ce\.vue$/
+  const customElementFilter =
+    typeof customElement === 'boolean'
+      ? () => customElement
+      : createFilter(customElement)
 
   return {
     name: 'vite-plugin-vue2',
@@ -92,6 +108,10 @@ export function createVuePlugin(rawOptions: VueViteOptions = {}): Plugin {
     },
 
     async resolveId(id) {
+      // component export helper
+      if (id === EXPORT_HELPER_ID) {
+        return id
+      }
       if (id === vueComponentNormalizer || id === vueHotReload) {
         return id
       }
@@ -102,6 +122,10 @@ export function createVuePlugin(rawOptions: VueViteOptions = {}): Plugin {
     },
 
     load(id) {
+      if (id === EXPORT_HELPER_ID) {
+        return helperCode
+      }
+
       if (id === vueComponentNormalizer) {
         return normalizeComponentCode
       }
@@ -150,7 +174,13 @@ export function createVuePlugin(rawOptions: VueViteOptions = {}): Plugin {
 
       if (!query.vue) {
         // main request
-        return await transformMain(code, filename, options, this)
+        return await transformMain(
+          code,
+          filename,
+          options,
+          this,
+          customElementFilter(filename)
+        )
       }
 
       const descriptor = getDescriptor(query.from || filename)!

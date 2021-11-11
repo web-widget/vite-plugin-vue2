@@ -7,17 +7,22 @@ import path from 'path'
 import fs from 'fs'
 import { TransformPluginContext } from 'rollup'
 import { RawSourceMap, SourceMapGenerator } from 'source-map'
+import { EXPORT_HELPER_ID } from './helper'
 
 export async function transformMain(
   code: string,
   filePath: string,
   options: ResolvedOptions,
-  pluginContext: TransformPluginContext
+  pluginContext: TransformPluginContext,
+  asCustomElement: boolean
 ) {
   const descriptor = createDescriptor(code, filePath, options)
 
   const hasFunctional =
     descriptor.template && descriptor.template.attrs.functional
+
+  // feature information
+  const attachedProps: [string, string][] = []
 
   // template
   const { code: templateCode, templateRequest } = await genTemplateRequest(
@@ -40,7 +45,9 @@ export async function transformMain(
     cssModuleVar,
     descriptor,
     filePath,
-    pluginContext
+    pluginContext,
+    asCustomElement,
+    attachedProps
   )
 
   let result =
@@ -106,7 +113,15 @@ function __vue2_injectStyles (context) {
     map = JSON.parse(emptyMapGen.toString())
   }
 
-  result += `\nexport default /*#__PURE__*/(function () { return __component__.exports })()`
+  if (!attachedProps.length) {
+    result += `\nexport default /*#__PURE__*/(function () { return __component__.exports })()`
+  } else {
+    result += `import _export_sfc from '${EXPORT_HELPER_ID}'
+    export default /*#__PURE__*/_export_sfc((function () { return __component__.exports })(), [${attachedProps
+      .map(([key, val]) => `['${key}',${val}]`)
+      .join(',')}])`
+  }
+
   return {
     code: result,
     map,
@@ -261,7 +276,9 @@ async function genStyleRequest(
   cssModuleVar: string,
   descriptor: SFCDescriptor,
   filename: string,
-  pluginContext: TransformPluginContext
+  pluginContext: TransformPluginContext,
+  asCustomElement: boolean,
+  attachedProps: [string, string][]
 ) {
   let scoped: boolean = false
   let stylesCode = ''
@@ -271,10 +288,22 @@ async function genStyleRequest(
     const attrsQuery = attrsToQuery(style.attrs, 'css')
     const srcQuery = style.src ? `&src` : ``
     const from = style.src ? `&from=${filename}` : ''
-    const query = `?vue&type=style&index=${i}${from}${srcQuery}`
+    const directQuery = asCustomElement ? `&inline` : ``
+    const query = `?vue&type=style&index=${i}${from}${srcQuery}${directQuery}`
     const styleRequest = src + query + attrsQuery
+    let hasCSSModules = false
     if (style.scoped) scoped = true
     if (style.module) {
+      if (asCustomElement) {
+        throw new Error(
+          `<style module> is not supported in custom elements mode.`
+        )
+      }
+      if (!hasCSSModules) {
+        stylesCode += `\nconst cssModules = {}`
+        attachedProps.push([`__cssModules`, `cssModules`])
+        hasCSSModules = true
+      }
       stylesCode += genCSSModulesCode(
         i,
         styleRequest,
@@ -282,7 +311,19 @@ async function genStyleRequest(
         cssModuleVar
       )
     } else {
-      stylesCode += `\nimport ${JSON.stringify(styleRequest)}`
+      if (asCustomElement) {
+        stylesCode += `\nimport _style_${i} from ${JSON.stringify(
+          styleRequest
+        )}`
+      } else {
+        stylesCode += `\nimport ${JSON.stringify(styleRequest)}`
+      }
+    }
+    if (asCustomElement) {
+      attachedProps.push([
+        `styles`,
+        `[${descriptor.styles.map((_, i) => `_style_${i}`).join(',')}]`,
+      ])
     }
   }
 
